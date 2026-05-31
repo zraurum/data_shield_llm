@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+
+  # ── LiteLLM proxy metrics ────────────────────────────────────
+  # Tracks: request counts, latency, cost per model/provider,
+  # guardrail trigger counts (PII detections, blocked responses).
+  - job_name: litellm
+    static_configs:
+      - targets:
+          - litellm:4000
+    metrics_path: /metrics
+
+  # ── APISIX gateway metrics ───────────────────────────────────
+  # Tracks: request rates, HTTP status codes, upstream latency,
+  # consumer-level request counts (per Cursor API key).
+  - job_name: apisix
+    static_configs:
+      - targets:
+          - apisix:9091
+    metrics_path: /apisix/prometheus/metrics
+
+  # ── Prometheus self-monitoring ────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

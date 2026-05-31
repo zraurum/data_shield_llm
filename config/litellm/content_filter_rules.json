@@ -1,0 +1,121 @@
+{
+  "comment": "Intent-based malicious code patterns for LLM response scanning (post_call).",
+  "comment2": "These patterns require a COMBINATION of a dangerous operation AND a target/exfiltration sink.",
+  "comment3": "Single-command patterns (rm, curl, SQL) are intentionally NOT included to avoid false positives",
+  "comment4": "on legitimate code generation in Cursor.",
+  "patterns": [
+
+    {
+      "name": "exfiltration_sensitive_file_curl",
+      "display_name": "Data Exfiltration via curl (sensitive file)",
+      "pattern": "curl[^\\n]{0,200}(?:-d\\s*@?/etc/|--data[^\\n]{0,50}/etc/|--data[^\\n]{0,50}~/.(?:ssh|aws|config|gnupg)|\\$(?:HOME|PWD)/\\.(?:ssh|aws|env)|/proc/[^\\n]{0,30})",
+      "category": "Malicious Code - Exfiltration",
+      "action": "BLOCK",
+      "description": "curl command reading and sending sensitive system files (/etc/passwd, SSH keys, AWS creds)"
+    },
+    {
+      "name": "exfiltration_sensitive_file_wget",
+      "display_name": "Data Exfiltration via wget (sensitive file)",
+      "pattern": "wget[^\\n]{0,200}(?:--post-(?:data|file)[^\\n]{0,100}(?:/etc/|~/.(?:ssh|aws)|\\$(?:HOME|PWD)/\\.))",
+      "category": "Malicious Code - Exfiltration",
+      "action": "BLOCK",
+      "description": "wget command posting sensitive file contents to a remote endpoint"
+    },
+    {
+      "name": "exfiltration_env_vars",
+      "display_name": "Environment Variable Exfiltration",
+      "pattern": "(?:printenv|env\\b|set\\b)[^\\n]{0,100}(?:\\||&&)[^\\n]{0,200}(?:curl|wget|nc\\b|netcat|socat|python[23]?\\s+-c|bash\\s+-i)[^\\n]{0,200}(?:https?://|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})",
+      "category": "Malicious Code - Exfiltration",
+      "action": "BLOCK",
+      "description": "Dumping env variables and piping to a network tool for exfiltration"
+    },
+    {
+      "name": "reverse_shell_bash",
+      "display_name": "Reverse Shell (bash)",
+      "pattern": "bash\\s+-i\\s*>\\s*&\\s*/dev/tcp/|bash\\s+-c\\s*['\"](?:.*>\\s*&\\s*/dev/tcp/|.*\\|\\s*bash)",
+      "category": "Malicious Code - Reverse Shell",
+      "action": "BLOCK",
+      "description": "Bash reverse shell payload connecting back to attacker"
+    },
+    {
+      "name": "reverse_shell_python",
+      "display_name": "Reverse Shell (Python)",
+      "pattern": "python[23]?\\s+-c\\s*['\"][^'\"]*(?:import\\s+socket[^'\"]*connect|os\\.system\\s*\\([^)]*(?:bash|sh|cmd)[^)]*\\))[^'\"]*['\"]",
+      "category": "Malicious Code - Reverse Shell",
+      "action": "BLOCK",
+      "description": "Python one-liner reverse shell"
+    },
+    {
+      "name": "reverse_shell_nc",
+      "display_name": "Reverse Shell (netcat)",
+      "pattern": "(?:nc|ncat|netcat)\\s+(?:-[elvp]{1,4}\\s+)*\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\s+\\d{2,5}\\s*(?:-e\\s+|&&|\\|)[^\\n]{0,100}(?:/bin/(?:sh|bash)|cmd\\.exe)",
+      "category": "Malicious Code - Reverse Shell",
+      "action": "BLOCK",
+      "description": "netcat reverse shell with shell execution"
+    },
+    {
+      "name": "fork_bomb",
+      "display_name": "Fork Bomb",
+      "pattern": ":\\s*\\(\\s*\\)\\s*\\{\\s*:[^}]{0,20}\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:|\\$\\(\\$0\\)|bash.*-c.*fork",
+      "category": "Malicious Code - Destructive",
+      "action": "BLOCK",
+      "description": "Fork bomb payload that exhausts system resources"
+    },
+    {
+      "name": "destructive_rm_root",
+      "display_name": "Destructive rm -rf /",
+      "pattern": "rm\\s+(?:-[^\\s]*f[^\\s]*\\s+|--force\\s+)(?:-[^\\s]*r[^\\s]*\\s+|--recursive\\s+|/\\*|/$)|rm\\s+(?:-[^\\s]*r[^\\s]*\\s+)(?:-[^\\s]*f[^\\s]*\\s+|--force\\s+)(?:/\\s|/$|/\\*)",
+      "category": "Malicious Code - Destructive",
+      "action": "BLOCK",
+      "description": "rm -rf targeting filesystem root or critical directories"
+    },
+    {
+      "name": "destructive_dd_zero",
+      "display_name": "Disk Wipe via dd",
+      "pattern": "dd\\s+(?:[^\\n]*\\s)?(?:if=/dev/(?:zero|urandom|null)\\s+of=/dev/(?:sd[a-z]|nvme|hd[a-z]|vd[a-z])|of=/dev/(?:sd[a-z]|nvme|hd[a-z]|vd[a-z])\\s+if=/dev/(?:zero|urandom))",
+      "category": "Malicious Code - Destructive",
+      "action": "BLOCK",
+      "description": "dd command writing zeros/random to a block device (disk wipe)"
+    },
+    {
+      "name": "crontab_persistence",
+      "display_name": "Malicious Crontab Persistence",
+      "pattern": "(?:crontab\\s+-[^\\n]{0,50}|echo[^\\n]{0,100}>>\\s*/etc/cron(?:tab|\\.[^/\\s]+)/)[^\\n]{0,200}(?:curl|wget|nc\\b|bash\\s+-i|python[23]?\\s+-c)[^\\n]{0,200}(?:https?://|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})",
+      "category": "Malicious Code - Persistence",
+      "action": "BLOCK",
+      "description": "Installing a network callback via crontab for persistent access"
+    },
+    {
+      "name": "supply_chain_pipe_install",
+      "display_name": "Pipe to Shell Installer (Supply Chain)",
+      "pattern": "(?:curl|wget)\\s+(?:-[^\\s]*\\s+)*https?://[^\\s|]+\\s*\\|\\s*(?:sudo\\s+)?(?:bash|sh|zsh|python[23]?)",
+      "category": "Malicious Code - Supply Chain",
+      "action": "BLOCK",
+      "description": "curl/wget piped directly to a shell — classic supply chain attack vector"
+    },
+    {
+      "name": "credential_file_exfil",
+      "display_name": "Credential File Exfiltration",
+      "pattern": "(?:cat|base64|xxd|od)\\s+(?:~/.ssh/(?:id_rsa|id_ed25519)|~/.aws/credentials|~/.aws/config|/etc/shadow|/etc/passwd|~/.gnupg/|~/.netrc|~/.git-credentials)[^\\n]{0,200}(?:\\||&&)[^\\n]{0,200}(?:curl|wget|nc\\b|python|perl|ruby)",
+      "category": "Malicious Code - Exfiltration",
+      "action": "BLOCK",
+      "description": "Reading SSH keys, AWS credentials, or /etc/shadow and sending via network tool"
+    },
+    {
+      "name": "ld_preload_hijack",
+      "display_name": "LD_PRELOAD Hijacking",
+      "pattern": "(?:export\\s+)?LD_PRELOAD[^\\n]{0,100}(?:/tmp/|/dev/shm/)",
+      "category": "Malicious Code - Privilege Escalation",
+      "action": "BLOCK",
+      "description": "LD_PRELOAD set to a library in /tmp or /dev/shm — shared library injection"
+    },
+    {
+      "name": "prompt_injection_in_response",
+      "display_name": "Prompt Injection in LLM Response",
+      "pattern": "(?:ignore|disregard|forget)\\s+(?:all\\s+)?(?:previous|prior|above|your)\\s+(?:instructions|rules|guidelines|constraints|system\\s+prompt)|(?:you\\s+are\\s+now|act\\s+as|pretend\\s+(?:you\\s+are|to\\s+be))\\s+(?:a\\s+)?(?:different|unrestricted|jailbroken|DAN|evil|malicious)",
+      "category": "Prompt Injection in Response",
+      "action": "BLOCK",
+      "description": "LLM response contains prompt injection instructions targeting the reading agent/user"
+    }
+  ]
+}

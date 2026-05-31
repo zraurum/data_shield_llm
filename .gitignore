@@ -1,0 +1,11 @@
+.env
+presentation/
+
+# Python/cache artifacts
+__pycache__/
+*.pyc
+
+# Local IDE/system
+.DS_Store
+.idea/
+.vscode/

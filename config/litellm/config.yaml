@@ -1,0 +1,291 @@
+# ============================================================
+# LiteLLM Proxy Configuration — DataShield LLM Service
+#
+# Cursor connects via APISIX → LiteLLM → LLM Provider.
+# Guards run in order: pre_call (PII + injection) → LLM → post_call (malicious code).
+# ============================================================
+
+model_list:
+
+  # ============================================================
+  # All upstream LLMs are accessed through OpenRouter so we have
+  # a single billing/credentials surface for the demo. The
+  # `openrouter/<vendor>/<model>` prefix tells LiteLLM to route
+  # via https://openrouter.ai/api/v1 using OPENROUTER_API_KEY.
+  #
+  # To switch a specific model back to a direct provider
+  # (e.g. native OpenAI for lower latency), change the
+  # `model:` line to `openai/<model>` and the `api_key:` line
+  # to `os.environ/OPENAI_API_KEY`.
+  # ============================================================
+
+  # ============================================================
+  # NOTE: On the demo OpenRouter account, all closed US providers
+  # (OpenAI / Anthropic / Google) return 403 "violation of provider
+  # Terms Of Service" account-wide, while Qwen (Alibaba + open
+  # providers) works. To keep Cursor / APISIX / the slide deck
+  # unchanged, the familiar model names below are kept but routed to
+  # confirmed-working Qwen backends. Explicit qwen-* aliases are
+  # added further down for honest selection in Cursor.
+  #
+  # Confirmed-working OpenRouter slugs (2026-05):
+  #   openrouter/qwen/qwen3-coder                  (480B, strong coder)
+  #   openrouter/qwen/qwen3-235b-a22b              (general)
+  #   openrouter/qwen/qwen-2.5-coder-32b-instruct  (fast coder)
+  # ============================================================
+
+  # ── "OpenAI" names → Qwen backend ───────────────────────────
+  - model_name: gpt-4o
+    litellm_params:
+      model: openrouter/qwen/qwen3-coder
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openrouter/qwen/qwen-2.5-coder-32b-instruct
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: gpt-4.1
+    litellm_params:
+      model: openrouter/qwen/qwen3-235b-a22b
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: gpt-4.1-mini
+    litellm_params:
+      model: openrouter/qwen/qwen-2.5-coder-32b-instruct
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ── "Anthropic" names → Qwen backend ────────────────────────
+  - model_name: claude-3-5-sonnet
+    litellm_params:
+      model: openrouter/qwen/qwen3-coder
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: claude-3-7-sonnet
+    litellm_params:
+      model: openrouter/qwen/qwen3-235b-a22b
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ── "Gemini" names → Qwen backend ───────────────────────────
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: openrouter/qwen/qwen-2.5-coder-32b-instruct
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: openrouter/qwen/qwen3-coder
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ── Explicit Qwen aliases (honest names for Cursor) ─────────
+  - model_name: qwen3-coder
+    litellm_params:
+      model: openrouter/qwen/qwen3-coder
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: qwen3-235b
+    litellm_params:
+      model: openrouter/qwen/qwen3-235b-a22b
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: qwen-2.5-coder
+    litellm_params:
+      model: openrouter/qwen/qwen-2.5-coder-32b-instruct
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ── Embeddings — local Ollama ───────────────────────────────
+  # OpenRouter does not currently expose a /v1/embeddings endpoint,
+  # so we route any embedding requests (including Cursor's codebase
+  # indexing if it falls back to text-embedding-3-small) to a small
+  # local model. nomic-embed-text gives 768-dim vectors, runs on CPU
+  # at ~50 ms per call, and is pulled by scripts/pull-ollama-models.sh.
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: ollama/nomic-embed-text
+      api_base: os.environ/OLLAMA_BASE_URL
+    model_info:
+      mode: embedding
+
+  # ── Ollama — INTERNAL VALIDATION ONLY ───────────────────────
+  # These models are hidden from Cursor (/v1/models) and are used
+  # exclusively by the guardrail pipeline.
+  #
+  # nomic-embed-text: embeddings for semantic_guard (always local; tiny,
+  #                   fast on CPU; replaces OpenAI embeddings here).
+  # llama-guard3:1b:  LLM-as-judge for pre_call/post_call safety checks.
+  #                   Used only when LLAMA_GUARD_PROVIDER=ollama. With
+  #                   LLAMA_GUARD_PROVIDER=openrouter (default for CPU
+  #                   hosts / demos) the guardrails server calls
+  #                   meta-llama/llama-guard-3-8b on OpenRouter directly
+  #                   and this entry is unused.
+  #
+  # Pull before first use: bash scripts/pull-ollama-models.sh
+  - model_name: ollama/nomic-embed-text
+    litellm_params:
+      model: ollama/nomic-embed-text
+      api_base: os.environ/OLLAMA_BASE_URL
+    model_info:
+      mode: embedding
+      hidden: true
+
+  - model_name: ollama/llama-guard3
+    litellm_params:
+      model: ollama/llama-guard3:1b
+      api_base: os.environ/OLLAMA_BASE_URL
+    model_info:
+      hidden: true
+
+
+# ============================================================
+# Router settings
+# ============================================================
+
+router_settings:
+  routing_strategy: usage-based-routing-v2
+  num_retries: 2
+  timeout: 120
+  retry_after: 5
+
+
+# ============================================================
+# General settings
+# ============================================================
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+
+  # Forward the original client IP from APISIX X-Forwarded-For
+  use_x_forwarded_for: true
+
+  # Store model config in file, not DB (version-controlled)
+  store_model_in_db: false
+
+
+# ============================================================
+# LiteLLM core settings
+# ============================================================
+
+litellm_settings:
+  # Prometheus metrics callback
+  success_callback: ["prometheus"]
+  failure_callback: ["prometheus"]
+
+  # Drop unsupported OpenAI params instead of erroring
+  drop_params: true
+
+  # Keep request/response in logs (needed for PII audit trail)
+  turn_off_message_logging: false
+
+
+# ============================================================
+# Guardrails — 6 layers of protection
+#
+#  pre_call  (prompt → external LLM):
+#    1. presidio          Log PII in Cursor prompts
+#    2. guardrails_ai     Block regex-detected prompt injection
+#    3. guardrails_ai     LLaMA Guard — deep semantic prompt safety check
+#
+#  post_call (response ← external LLM):
+#    4. litellm_content_filter  Block malicious code patterns
+#    5. semantic_guard          Block prompt injection in response (embeddings)
+#    6. guardrails_ai     LLaMA Guard — deep semantic response vulnerability scan
+#
+# Layers 3 and 6 run LLaMA Guard 3 via the guardrails-server. The
+# backend is selectable in the .env file:
+#   LLAMA_GUARD_PROVIDER=openrouter → meta-llama/llama-guard-3-8b on
+#                                      OpenRouter (default; no GPU needed)
+#   LLAMA_GUARD_PROVIDER=ollama     → local llama-guard3 via Ollama
+# Either way, the guard names below (ollama-prompt-validator,
+# ollama-response-validator) stay the same — the backend is internal
+# to the guardrails server.
+#
+# Cursor sends code context so Presidio runs in logging_only mode —
+# it flags PII without stripping it to preserve code context.
+# ============================================================
+
+guardrails:
+
+  # ── Layer 1: PII Detection (Presidio) ──────────────────────
+  # Detects: names, emails, phones, credit cards, IBANs, passports, etc.
+  # Default action: log + metric increment (no stripping to preserve code context)
+  - guardrail_name: presidio-pii-masking
+    litellm_params:
+      guardrail: presidio
+      mode: pre_call
+      logging_only: true
+      # Microsoft Presidio :latest now listens on port 3000 inside the
+      # container (used to be 5001/5002). Both URLs below must match the
+      # healthcheck in docker-compose.yml.
+      presidio_analyzer_api_base: "http://presidio-analyzer:3000"
+      presidio_anonymizer_api_base: "http://presidio-anonymizer:3000"
+
+  # ── Layer 2: Prompt Injection Guard — Regex (Guardrails AI) ─
+  # Fast regex pass: jailbreak, instruction overrides, DAN, system prompt
+  # extraction, role hijacking. Runs before the slower Ollama check.
+  - guardrail_name: prompt-injection-guard
+    litellm_params:
+      guardrail: guardrails_ai
+      mode: pre_call
+      api_base: "http://guardrails-server:8000"
+      guard_name: "prompt-injection-guard"
+      default_on: true
+
+  # ── Layer 3: Prompt Safety — Ollama LLaMA Guard (pre_call) ──
+  # Deep semantic safety check using local llama-guard3:1b.
+  # Catches subtle attacks that evade regex: indirect injection,
+  # obfuscated jailbreaks, policy-violating content in any language.
+  # Fully offline — no external API key required.
+  - guardrail_name: ollama-prompt-safety
+    litellm_params:
+      guardrail: guardrails_ai
+      mode: pre_call
+      api_base: "http://guardrails-server:8000"
+      guard_name: "ollama-prompt-validator"
+      default_on: true
+
+  # ── Layer 4: Malicious Code Filter (LiteLLM Content Filter) ─
+  # Fast regex pass on LLM *responses*:
+  #   - data exfiltration combos (curl/wget + sensitive paths)
+  #   - destructive commands (fork bomb, dd zero-fill, rm -rf /)
+  #   - credential harvesting (env dump + outbound transfer)
+  # Does NOT block: legitimate code generation (rm, curl, SQL in isolation)
+  - guardrail_name: malicious-code-filter
+    litellm_params:
+      guardrail: litellm_content_filter
+      mode: post_call
+      default_on: true
+
+  # ── Layer 5: Semantic Injection Guard (post_call) ────────────
+  # TEMPORARILY DISABLED for demo stability:
+  # Current LiteLLM semantic_guard initialization calls Ollama
+  # /api/embed, but ollama/ollama:latest in this environment only
+  # exposes /api/embeddings for nomic-embed-text. This causes
+  # LiteLLM startup failure before the proxy can serve requests.
+  #
+  # Keep layers 1-4 and 6 active for the live demo. Re-enable this
+  # block after pinning compatible LiteLLM + Ollama versions.
+  #
+  # - guardrail_name: semantic-response-injection-guard
+  #   litellm_params:
+  #     guardrail: semantic_guard
+  #     mode: post_call
+  #     embedding_model: ollama/nomic-embed-text
+  #     route_templates:
+  #       - prompt_injection
+  #     similarity_threshold: 0.80
+  #     on_flagged_action: block
+  #     default_on: true
+
+  # ── Layer 6: Response Vulnerability Scan — Ollama LLaMA Guard ─
+  # Deep semantic scan of LLM *responses* using local llama-guard3:1b.
+  # Catches: subtle malicious code intent, social engineering,
+  # harmful instructions that evade regex patterns.
+  # Fully offline — no external API key required.
+  - guardrail_name: ollama-response-safety
+    litellm_params:
+      guardrail: guardrails_ai
+      mode: post_call
+      api_base: "http://guardrails-server:8000"
+      guard_name: "ollama-response-validator"
+      default_on: true

@@ -1,0 +1,67 @@
+# ============================================================
+# DataShield — Guardrails AI Server
+#
+# Built from the local guardrails/ source repo.
+# No Hub token required; ships a custom regex-based
+# prompt injection validator (datashield/prompt-injection-detector).
+#
+# Optional: pass --build-arg GUARDRAILS_TOKEN=<token> to enable
+# additional Hub validators after the base install.
+# ============================================================
+
+FROM python:3.11-slim
+
+ARG GUARDRAILS_TOKEN=""
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    LOGLEVEL=INFO \
+    APP_ENVIRONMENT=production
+
+WORKDIR /app
+
+# ── System dependencies ──────────────────────────────────────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        git \
+        curl \
+        jq && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Install Guardrails AI from local source ──────────────────
+# Copies the full guardrails/ subdirectory into the image so
+# the build is fully reproducible without network access.
+COPY guardrails/ /app/guardrails-src/
+
+RUN pip install --no-cache-dir "/app/guardrails-src[api]"
+
+# ── Optional: configure Hub token for additional validators ──
+# Runs only when a non-empty token is provided at build time.
+RUN if [ -n "$GUARDRAILS_TOKEN" ]; then \
+        guardrails configure \
+            --enable-metrics \
+            --enable-remote-inferencing \
+            --token "$GUARDRAILS_TOKEN"; \
+    else \
+        echo "No GUARDRAILS_TOKEN provided — running with local validators only."; \
+    fi
+
+# ── Copy guard configuration ─────────────────────────────────
+COPY config/guardrails/guardrails_config.py /app/config.py
+COPY config/guardrails/start_guardrails_server.py /app/start_guardrails_server.py
+
+# ── Health check endpoint script ─────────────────────────────
+# guardrails_api FastAPI app exposes /health by default.
+# If not available in older versions, fallback to /docs.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -sf http://localhost:8000/health || curl -sf http://localhost:8000/docs || exit 1
+
+EXPOSE 8000
+
+# Start the Guardrails AI FastAPI server with a stable Python launcher.
+# This bypasses a known `guardrails start` CLI regression where Typer
+# OptionInfo defaults leak into runtime and crash startup.
+CMD ["python", "/app/start_guardrails_server.py"]

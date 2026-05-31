@@ -1,0 +1,91 @@
+# ============================================================
+# Apache APISIX Configuration — DataShield LLM Service
+#
+# This is the sole external entry point.
+# Cursor IDE settings:
+#   OpenAI Base URL: http://localhost:9080
+#   API Key: <Bearer token issued via scripts/init-apisix.sh>
+# ============================================================
+
+apisix:
+  node_listen: 9080
+  enable_ipv6: false
+
+  # Disable proxy buffering globally so SSE streaming works for Cursor.
+  # Responses stream token-by-token without waiting for the full reply.
+  extra_lua_path: ""
+
+  proxy_mode: http
+
+  enable_control: true
+  control:
+    ip: "0.0.0.0"
+    port: 9092
+
+  # ── Logging ─────────────────────────────────────────────────
+  error_log_level: warn
+  access_log: /usr/local/apisix/logs/access.log
+
+deployment:
+  role: traditional
+  role_traditional:
+    config_provider: etcd
+
+  admin:
+    # Admin API — used by init-apisix.sh to configure routes and consumers.
+    # Bind to all interfaces inside the Docker network only.
+    listen:
+      - ip: 0.0.0.0
+        port: 9180
+    allow_admin:
+      - 0.0.0.0/0
+
+    admin_key:
+      # NOTE: APISIX does NOT interpolate env vars in this file.
+      # If you rotate APISIX_ADMIN_KEY in .env, update this value to match,
+      # then `docker compose restart apisix` and re-run scripts/init-apisix.sh.
+      - name: "admin"
+        key: 9b05176f2bc74187bfc873f3c432d845
+        role: admin
+
+      - name: "viewer"
+        key: 4054f7cf07e344346cd3f287985e76a2
+        role: viewer
+
+  etcd:
+    host:
+      - "http://etcd:2379"
+    prefix: "/apisix"
+    timeout: 30
+
+# ── Plugins ──────────────────────────────────────────────────
+# Only load plugins that are actually used. Keeps the attack surface small.
+plugins:
+  - key-auth          # Bearer token authentication for Cursor consumers
+  - limit-req         # Per-consumer request rate limiting
+  - limit-count       # Sliding window request count limiting
+  - proxy-rewrite     # Strip/rewrite headers before forwarding to LiteLLM
+  - response-rewrite  # Modify response headers if needed
+  - prometheus        # Expose /apisix/prometheus/metrics for Prometheus scraping
+  - cors              # Handle CORS for browser-based clients (if any)
+  - request-id        # Inject X-Request-ID for tracing
+  - http-logger       # Access logging to stdout / remote endpoint
+  - real-ip           # Extract real client IP from X-Forwarded-For
+
+plugin_attr:
+  prometheus:
+    export_addr:
+      ip: "0.0.0.0"
+      port: 9091
+    export_uri: /apisix/prometheus/metrics
+    metric_prefix: datashield_apisix_
+
+  # key-auth: read Bearer token from Authorization header
+  # (Cursor sends: Authorization: Bearer sk-cursor-...)
+  key-auth:
+    header: Authorization
+
+  real-ip:
+    source: X-Forwarded-For
+    trusted_addresses:
+      - 0.0.0.0/0

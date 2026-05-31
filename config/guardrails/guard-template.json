@@ -1,0 +1,20 @@
+{
+  "name": "datashield",
+  "description": "DataShield LLM Service — prompt injection guard (no Hub token required)",
+  "template_version": "1.0.0",
+  "namespace": "datashield",
+  "guards": [
+    {
+      "id": "prompt-injection-guard",
+      "name": "prompt-injection-guard",
+      "description": "Detects and blocks prompt injection, jailbreak attempts, and system prompt extraction in user messages.",
+      "validators": [
+        {
+          "id": "datashield/prompt-injection-detector",
+          "on": "$",
+          "onFail": "exception"
+        }
+      ]
+    }
+  ]
+}

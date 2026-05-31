@@ -1,0 +1,316 @@
+services:
+
+  # ────────────────────────────────────────────────────────────
+  # APISIX config store
+  # ────────────────────────────────────────────────────────────
+  etcd:
+    # NOTE: As of August 2025, Bitnami restricted public access to tagged
+    # versions on docker.io/bitnami/*. Old images were relocated to
+    # docker.io/bitnamilegacy/*. We use that for now; if you mirror to a
+    # private registry, repoint this image.
+    image: bitnamilegacy/etcd:3.4.15
+    restart: unless-stopped
+    environment:
+      ETCD_ENABLE_V2: "true"
+      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+    volumes:
+      - etcd_data:/bitnami/etcd
+    networks:
+      - datashield
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ────────────────────────────────────────────────────────────
+  # APISIX — sole external entry point for Cursor
+  # Cursor settings: OpenAI Base URL = http://localhost:9080
+  # ────────────────────────────────────────────────────────────
+  apisix:
+    image: apache/apisix:3.11.0-debian
+    restart: unless-stopped
+    depends_on:
+      etcd:
+        condition: service_healthy
+    ports:
+      - "9080:9080"    # Cursor connects here
+      - "9180:9180"    # Admin API (internal use only)
+    volumes:
+      - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - apisix_logs:/usr/local/apisix/logs
+    networks:
+      - datashield
+    healthcheck:
+      # APISIX image doesn't ship curl/wget in recent tags; use bash TCP probe.
+      # A successful /dev/tcp open confirms nginx is listening on :9080.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ────────────────────────────────────────────────────────────
+  # LiteLLM proxy — unifies all LLM providers, runs guardrails
+  # NOT exposed to host; accessible only via APISIX
+  # ────────────────────────────────────────────────────────────
+  litellm:
+    build:
+      context: ./litellm
+      args:
+        target: runtime
+    image: datashield/litellm:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      presidio-analyzer:
+        condition: service_healthy
+      presidio-anonymizer:
+        condition: service_healthy
+      guardrails-server:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://llmproxy:${POSTGRES_PASSWORD:-dbpassword9090}@db:5432/litellm"
+      STORE_MODEL_IN_DB: "False"
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY}"
+
+      # Primary upstream credential — all models route through OpenRouter
+      # by default (see config/litellm/config.yaml).
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+
+      # Optional direct provider keys (left blank by default).
+      # Populate these and switch the corresponding model entries in
+      # config/litellm/config.yaml from `openrouter/...` to `openai/...`
+      # etc. if you want to bypass OpenRouter for a specific vendor.
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      AZURE_API_KEY: "${AZURE_API_KEY:-}"
+      AZURE_API_BASE: "${AZURE_API_BASE:-}"
+      AZURE_API_VERSION: "${AZURE_API_VERSION:-}"
+
+      OLLAMA_BASE_URL: "http://ollama:11434"
+    volumes:
+      - ./config/litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
+    networks:
+      - datashield
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ────────────────────────────────────────────────────────────
+  # PostgreSQL — LiteLLM key management, spend tracking, logs
+  # ────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: llmproxy
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-dbpassword9090}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - datashield
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U llmproxy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ────────────────────────────────────────────────────────────
+  # Microsoft Presidio — PII detection + anonymization
+  # pre_call: scans Cursor prompts for PII (logging_only mode)
+  # ────────────────────────────────────────────────────────────
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    restart: unless-stopped
+    networks:
+      - datashield
+    healthcheck:
+      # Newer Microsoft Presidio images listen on :3000 by default and ship
+      # no curl/wget. We use the bundled Python interpreter for the probe.
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:3000/health', timeout=4).status == 200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  presidio-anonymizer:
+    image: mcr.microsoft.com/presidio-anonymizer:latest
+    restart: unless-stopped
+    networks:
+      - datashield
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:3000/health', timeout=4).status == 200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ────────────────────────────────────────────────────────────
+  # Ollama — local LLM runtime for security validation ONLY.
+  # NOT exposed as a provider to Cursor.
+  # Roles:
+  #   - nomic-embed-text → embeddings for semantic_guard (always local,
+  #                         tiny ~274 MB, fast on CPU)
+  #   - llama-guard3     → LLM-as-judge for prompts/responses, used ONLY
+  #                         when LLAMA_GUARD_PROVIDER=ollama. With
+  #                         LLAMA_GUARD_PROVIDER=openrouter (default for
+  #                         CPU-only hosts / demos) this image still runs
+  #                         but llama-guard does not need to be pulled.
+  #
+  # GPU (NVIDIA): uncomment the `deploy` block below.
+  # Pull required models after first start:
+  #   bash scripts/pull-ollama-models.sh
+  # ────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - datashield
+    # ── NVIDIA GPU support (uncomment to enable) ──────────────
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    healthcheck:
+      # The ollama/ollama image is a minimal Go-built distribution and
+      # ships without curl/wget. We use the bundled `ollama` CLI itself,
+      # which talks to the daemon over the local HTTP port internally —
+      # if the daemon is up, `ollama list` returns 0.
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ────────────────────────────────────────────────────────────
+  # Guardrails AI server — prompt injection + Ollama LLM judge
+  # Built from the local guardrails/ source; no Hub token needed.
+  # Calls Ollama internally for deep semantic security checks.
+  # ────────────────────────────────────────────────────────────
+  guardrails-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.guardrails
+      args:
+        GUARDRAILS_TOKEN: "${GUARDRAILS_TOKEN:-}"
+    image: datashield/guardrails:local
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      APP_ENVIRONMENT: "production"
+      LOGLEVEL: "${GUARDRAILS_LOG_LEVEL:-INFO}"
+
+      # ── LLaMA Guard backend selector ────────────────────────
+      # "openrouter" → call meta-llama/llama-guard-3-8b remotely (no GPU)
+      # "ollama"     → call local llama-guard via the ollama service
+      LLAMA_GUARD_PROVIDER: "${LLAMA_GUARD_PROVIDER:-}"
+
+      # OpenRouter backend
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENROUTER_BASE_URL: "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"
+      LLAMA_GUARD_OPENROUTER_MODEL: "${LLAMA_GUARD_OPENROUTER_MODEL:-meta-llama/llama-guard-3-8b}"
+
+      # Ollama backend (kept as fallback; embedding model lives here too)
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      OLLAMA_VALIDATION_MODEL: "${OLLAMA_VALIDATION_MODEL:-llama-guard3:1b}"
+    networks:
+      - datashield
+    healthcheck:
+      # In current Guardrails API builds the root route (/) is available,
+      # while /health may be absent. Probe "/" for readiness.
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ────────────────────────────────────────────────────────────
+  # Prometheus — metrics collection
+  # ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    networks:
+      - datashield
+
+  # ────────────────────────────────────────────────────────────
+  # Grafana — dashboards for PII findings, request metrics, costs
+  # ────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - datashield
+
+networks:
+  datashield:
+    driver: bridge
+    # Pin a concrete subnet so Docker doesn't have to scan the /172 space
+    # for a free /16. On hosts with corporate VPNs claiming chunks of
+    # 172.x, the auto-allocator can hit
+    # "all predefined address pools have been fully subnetted".
+    # 172.30.x is rarely used by VPNs; change here if it collides with yours.
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
+
+volumes:
+  etcd_data:
+  apisix_logs:
+  postgres_data:
+    name: datashield_postgres_data
+  prometheus_data:
+  grafana_data:
+  ollama_models:
+    name: datashield_ollama_models
