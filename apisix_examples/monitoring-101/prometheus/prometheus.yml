@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+  
+  - job_name: "go-app"
+    static_configs:
+      - targets: ["go-app:8080"]
+
+  - job_name: "python-app"
+    static_configs:
+      - targets: ["python-app:8000"]
+
+  - job_name: "apisix"
+    static_configs:
+      - targets: ["apisix:9080"]
+    metrics_path: "/prometheus/metrics"

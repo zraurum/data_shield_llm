@@ -1,5 +1,6 @@
 .env
 presentation/
+apisix_examples/apisix-workshop/mkcert/*-key.pem
 
 # Python/cache artifacts
 __pycache__/

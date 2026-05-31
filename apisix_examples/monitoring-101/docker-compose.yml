@@ -1,0 +1,30 @@
+version: "3"
+
+services:
+  apisix:
+    image: apache/apisix:2.15.0-alpine
+    volumes:
+      - ./apisix/config.yml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix/apisix.yml:/usr/local/apisix/conf/apisix.yaml:ro
+    ports:
+      - "9080:9080"
+  go-app:
+    build: ./go-app
+    environment:
+      - PYTHON_APP_URL=python-app
+    ports:
+      - "8080:8080"
+  python-app:
+    build: ./python-app
+    ports:
+      - "8000:8000"
+  prometheus:
+    image: prom/prometheus:v2.40.4
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus
+  grafana:
+    image: grafana/grafana:9.3.0
+    ports:
+      - "3000:3000"
