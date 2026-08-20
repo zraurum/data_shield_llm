@@ -79,4 +79,4 @@ https://github.com/zraurum/data_shield_llm
 ## Authors
 
 - [zraurum](https://github.com/zraurum)
-- cunick (`cunick@gmail.com`)
+- Nikolai Abramov (`cunick@gmail.com`)

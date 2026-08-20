@@ -45,7 +45,9 @@ deployment:
       # If you rotate APISIX_ADMIN_KEY in .env, update this value to match,
       # then `docker compose restart apisix` and re-run scripts/init-apisix.sh.
       - name: "admin"
-        key: 9b05176f2bc74187bfc873f3c432d845
+        # Placeholder — must match APISIX_ADMIN_KEY in .env (see .env.example).
+        # Rotate before any public/shared deployment.
+        key: edd1c9f034335f136f87ad84b625c8f1
         role: admin
 
       - name: "viewer"
